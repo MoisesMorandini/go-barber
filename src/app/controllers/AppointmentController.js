@@ -6,7 +6,8 @@ import User from '../models/User';
 import File from '../models/File';
 import Notification from '../schemas/Notification';
 
-import Mail from '../../lib/Mail'
+import CancellationMail from '../jobs/CancellationMail';
+import Queue from '../../lib/Queue'
 
 class AppointmentController {
   async index(req, res) {
@@ -18,7 +19,7 @@ class AppointmentController {
         canceled_at: null,
       },
       order: ['date'],
-      attributes: ['id', 'date'],
+      attributes: ['id', 'date', 'past', 'cancelable'],
       limit: 20,
       offset: (page - 1) * 20,
       include: [
@@ -125,12 +126,14 @@ class AppointmentController {
     const appointment = await Appointment.findByPk(req.params.id, {
       include: [
         {
-          model:User, as: 'provider', atributes: ['name', 'email']
+          model: User,
+          as: 'provider',
+          attributes: ['name', 'email'],
         },
         {
           model: User,
           as: 'user',
-          atributes: 'name',
+          attributes: ['name'],
         }
       ]
     });
@@ -141,6 +144,11 @@ class AppointmentController {
       })
     }
 
+    if(appointment.canceled_at !== null){
+      return res.status(401).json({
+        error: 'This appointment already is canceled',
+      })
+    }
 
     const dateWithSub = subHours(appointment.date, 2);
     if(isBefore(dateWithSub, new Date())){
@@ -153,23 +161,10 @@ class AppointmentController {
 
     await appointment.save();
 
-    await Mail.sendMail({
-      to: `${appointment.provider.name}<${appointment.provider.email}>`,
-      subject: 'Agendamento cancelado',
-      template: 'cancellation',
-      context: {
-        provider: appointment.provider.name,
-        user: appointment.user.name,
-        date: format(
-          appointment.date,
-          "'dia' dd 'de' MMMM', às' H:mm'h'",
-          {
-            locale: pt,
-          }
-        )
-      }
-    });
 
+    await Queue.add(CancellationMail.key, {
+      appointment,
+    })
 
     return res.json(appointment);
   }
